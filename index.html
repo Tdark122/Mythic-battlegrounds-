@@ -83,10 +83,33 @@
         const passInput = document.getElementById('auth-password');
 
         btnSignup.onclick = async () => {
-            const email = emailInput.value;
-            const password = passInput.value;
+            const email = emailInput.value.trim();
+            const password = passInput.value.trim();
+            
+            // Input validation
+            if (!email || !password) {
+                alert("Please enter both email and password");
+                return;
+            }
+            
+            if (password.length < 6) {
+                alert("Password must be at least 6 characters");
+                return;
+            }
+            
+            if (!email.includes('@')) {
+                alert("Please enter a valid email");
+                return;
+            }
+
+            btnSignup.disabled = true;
+            btnSignup.innerText = "Creating Account...";
+
             try {
+                console.log("Creating user with email:", email);
                 const res = await createUserWithEmailAndPassword(auth, email, password);
+                console.log("User created:", res.user.uid);
+                
                 const domainId = Math.floor(Math.random() * 1000) + 1;
                 const domain = generateDomain(domainId);
                 const initialMonsters = [
@@ -95,6 +118,7 @@
                     Math.floor(Math.random() * 500) + 1
                 ];
                 
+                console.log("Writing user profile to Firestore...");
                 await setDoc(doc(db, "users", res.user.uid), {
                     uid: res.user.uid,
                     username: email.split('@')[0],
@@ -104,20 +128,51 @@
                     inventory: initialMonsters,
                     lastDomainUse: 0
                 });
-                alert("Account created!");
-            } catch (e) { alert(e.message); }
+                
+                console.log("Account created successfully!");
+                alert("Account created! You're now logged in.");
+                emailInput.value = "";
+                passInput.value = "";
+            } catch (e) { 
+                console.error("Signup error:", e);
+                alert("Error: " + e.message);
+            } finally {
+                btnSignup.disabled = false;
+                btnSignup.innerText = "Sign Up";
+            }
         };
 
         btnLogin.onclick = async () => {
+            const email = emailInput.value.trim();
+            const password = passInput.value.trim();
+            
+            if (!email || !password) {
+                alert("Please enter both email and password");
+                return;
+            }
+
+            btnLogin.disabled = true;
+            btnLogin.innerText = "Logging in...";
+
             try {
-                await signInWithEmailAndPassword(auth, emailInput.value, passInput.value);
-            } catch (e) { alert(e.message); }
+                console.log("Logging in with email:", email);
+                await signInWithEmailAndPassword(auth, email, password);
+                emailInput.value = "";
+                passInput.value = "";
+            } catch (e) { 
+                console.error("Login error:", e);
+                alert("Error: " + e.message);
+            } finally {
+                btnLogin.disabled = false;
+                btnLogin.innerText = "Login";
+            }
         };
 
         btnLogout.onclick = () => signOut(auth);
 
         onAuthStateChanged(auth, async (user) => {
             if (user) {
+                console.log("User logged in:", user.uid);
                 window.appState.user = user;
                 try {
                     const snap = await getDoc(doc(db, "users", user.uid));
@@ -131,10 +186,12 @@
                         await signOut(auth);
                     }
                 } catch (e) {
+                    console.error("Profile error:", e);
                     alert("Error loading profile: " + e.message);
                     await signOut(auth);
                 }
             } else {
+                console.log("No user logged in");
                 showScreen('auth-screen');
             }
         });
