@@ -8,7 +8,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp, arrayUnion, orderBy, limit } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp, arrayUnion, orderBy, limit } from "https://www.gstatic.com/firebasejs/9.22[...]
         
         // User's Firebase Config
         const firebaseConfig = {
@@ -36,6 +36,9 @@
             { name: "Legendary", color: "yellow", mult: 3 }
         ];
 
+        // Anime character tags for variety
+        const ANIME_TAGS = ["anime", "manga", "character", "demon", "spirit", "warrior", "mage", "beast", "dragon", "fantasy"];
+
         function getRarityFromSeed(seed) {
             const roll = seed % 100;
             if (roll < 60) return 0; // Common
@@ -55,6 +58,10 @@
             const baseAtk = 500 + (seed % 2501);
             const baseHp = 1000 + (seed % 4001);
             
+            // Use anime API for better images
+            const animeTag = ANIME_TAGS[seed % ANIME_TAGS.length];
+            const image = `https://api.waifu.pics/random/safe?tag=${animeTag}`;
+            
             return {
                 id,
                 name,
@@ -64,7 +71,7 @@
                 atk: Math.floor(baseAtk * rarity.mult),
                 hp: Math.floor(baseHp * rarity.mult),
                 ability: type === "attack" ? `Boosts ${prefix} types by 20%.` : `Heals 500 HP on summon.`,
-                image: `https://picsum.photos/seed/${name.replace(/ /g, '')}/200`,
+                image: image,
                 price: Math.floor((50 + baseAtk + baseHp) * rarity.mult)
             };
         }
@@ -269,6 +276,8 @@
 
         function renderShop() {
             const shopGrid = document.getElementById('shop-grid');
+            const shopMoney = document.getElementById('shop-money');
+            shopMoney.innerText = window.appState.profile.money;
             shopGrid.innerHTML = "";
             
             shopMonsters.forEach((monster, idx) => {
@@ -278,13 +287,14 @@
                 
                 div.className = `bg-gray-800 border-2 border-${rarityColor}-500 rounded p-3 cursor-pointer hover:scale-105 transition`;
                 div.innerHTML = `
-                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2">
+                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2" onerror="this.src='https://via.placeholder.com/200/1a1a2e/00ffff?text=${encodeURIComponent(monster.name)}'">
                     <div class="font-bold text-sm truncate">${monster.name}</div>
                     <div class="text-xs text-${rarityColor}-300 font-bold">${monster.rarity}</div>
                     <div class="text-xs mt-1">ATK: ${monster.atk}</div>
                     <div class="text-xs">HP: ${monster.hp}</div>
-                    <button class="w-full mt-2 ${canAfford ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 cursor-not-allowed'} px-2 py-1 rounded text-xs font-bold">
-                        ${canAfford ? `BUY $${monster.price}` : 'NO $'}
+                    <div class="bg-yellow-700 px-2 py-1 rounded text-xs font-bold text-center my-2">💰 $${monster.price}</div>
+                    <button class="w-full ${canAfford ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 cursor-not-allowed'} px-2 py-1 rounded text-xs font-bold">
+                        ${canAfford ? 'BUY' : 'NO $'}
                     </button>
                 `;
                 
@@ -346,12 +356,13 @@
                 
                 div.className = `bg-gray-800 border-2 border-${rarityColor}-500 rounded p-3`;
                 div.innerHTML = `
-                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2">
+                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2" onerror="this.src='https://via.placeholder.com/200/1a1a2e/00ffff?text=${encodeURIComponent(monster.name)}'">
                     <div class="font-bold text-sm truncate">${monster.name}</div>
                     <div class="text-xs text-${rarityColor}-300 font-bold">${monster.rarity}</div>
                     <div class="text-xs mt-1">ATK: ${monster.atk}</div>
                     <div class="text-xs">HP: ${monster.hp}</div>
-                    <div class="bg-blue-600 mt-2 px-2 py-1 rounded text-xs font-bold text-center">x${count}</div>
+                    <div class="bg-yellow-700 px-2 py-1 rounded text-xs font-bold text-center my-2">💰 $${monster.price}</div>
+                    <div class="bg-blue-600 px-2 py-1 rounded text-xs font-bold text-center">x${count}</div>
                 `;
                 invGrid.appendChild(div);
             });
@@ -496,7 +507,7 @@
             const div = document.createElement('div');
             div.className = `monster-card w-24 bg-gray-800 border ${m.type === 'attack' ? 'border-red-500' : 'border-blue-500'} rounded p-1 text-[10px] cursor-pointer`;
             div.innerHTML = `
-                <img src="${m.image}" class="w-full h-12 object-cover rounded mb-1">
+                <img src="${m.image}" class="w-full h-12 object-cover rounded mb-1" onerror="this.src='https://via.placeholder.com/100/1a1a2e/00ffff?text=${encodeURIComponent(m.name)}'">
                 <div class="font-bold truncate">${m.name}</div>
                 <div>ATK: ${m.atk}</div>
                 <div class="text-gray-400">${m.type}</div>
