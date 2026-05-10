@@ -8,8 +8,8 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp, arrayUnion, orderBy } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
-
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, onSnapshot, addDoc, serverTimestamp, arrayUnion, orderBy, limit } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
+        
         // User's Firebase Config
         const firebaseConfig = {
             apiKey: "AIzaSyAoRInsDwLb96T0EQMgryuMvclYRc18_4o",
@@ -29,21 +29,43 @@
         const MONSTER_NOUNS = ["Dragon", "Knight", "Golem", "Wraith", "Beast", "Titan", "Spirit", "Warrior", "Sentinel", "Reaper", "Serpent", "Phoenix", "Ogre", "Chimera", "Lich"];
         const DOMAIN_PREFIXES = ["Infinite", "Eternal", "Abyssal", "Celestial", "Silent", "Shattered", "Burning", "Frozen", "Golden", "Dark", "Radiant", "Chaotic", "Hollow", "Sacred", "Malevolent"];
         const DOMAIN_SUFFIXES = ["Void", "Palace", "Garden", "Prison", "Library", "Temple", "Forest", "Ocean", "Desert", "Graveyard", "Castle", "Shrine", "Domain", "Horizon", "Sanctum"];
+        const RARITY_TIERS = [
+            { name: "Common", color: "gray", mult: 1 },
+            { name: "Rare", color: "blue", mult: 1.5 },
+            { name: "Epic", color: "purple", mult: 2 },
+            { name: "Legendary", color: "yellow", mult: 3 }
+        ];
+
+        function getRarityFromSeed(seed) {
+            const roll = seed % 100;
+            if (roll < 60) return 0; // Common
+            if (roll < 85) return 1; // Rare
+            if (roll < 98) return 2; // Epic
+            return 3; // Legendary
+        }
 
         function generateMonster(id) {
             const seed = id * 12345;
+            const rarityIdx = getRarityFromSeed(seed);
+            const rarity = RARITY_TIERS[rarityIdx];
             const prefix = MONSTER_PREFIXES[seed % MONSTER_PREFIXES.length];
             const noun = MONSTER_NOUNS[(seed >> 2) % MONSTER_NOUNS.length];
             const name = `${prefix} ${noun}`;
             const type = (seed % 10) > 3 ? "attack" : "spell";
+            const baseAtk = 500 + (seed % 2501);
+            const baseHp = 1000 + (seed % 4001);
+            
             return {
                 id,
                 name,
                 type,
-                atk: 500 + (seed % 2501),
-                hp: 1000 + (seed % 4001),
+                rarity: rarity.name,
+                rarityIdx,
+                atk: Math.floor(baseAtk * rarity.mult),
+                hp: Math.floor(baseHp * rarity.mult),
                 ability: type === "attack" ? `Boosts ${prefix} types by 20%.` : `Heals 500 HP on summon.`,
-                image: `https://picsum.photos/seed/${name.replace(/ /g, '')}/200`
+                image: `https://picsum.photos/seed/${name.replace(/ /g, '')}/200`,
+                price: Math.floor((50 + baseAtk + baseHp) * rarity.mult)
             };
         }
 
@@ -60,7 +82,7 @@
         }
 
         // --- UI State Management ---
-        const screens = ['auth-screen', 'lobby-screen', 'chat-screen', 'battle-screen'];
+        const screens = ['auth-screen', 'lobby-screen', 'chat-screen', 'battle-screen', 'shop-screen', 'inventory-screen', 'leaderboard-screen'];
         function showScreen(screenId) {
             screens.forEach(id => {
                 document.getElementById(id).classList.toggle('hidden', id !== screenId);
@@ -86,7 +108,6 @@
             const email = emailInput.value.trim();
             const password = passInput.value.trim();
             
-            // Input validation
             if (!email || !password) {
                 alert("Please enter both email and password");
                 return;
@@ -123,10 +144,13 @@
                     uid: res.user.uid,
                     username: email.split('@')[0],
                     level: 1,
-                    money: 1000,
+                    wins: 0,
+                    money: 5000,
                     domain: domain,
                     inventory: initialMonsters,
-                    lastDomainUse: 0
+                    lastDomainUse: 0,
+                    lastDailyReward: 0,
+                    createdAt: Date.now()
                 });
                 
                 console.log("Account created successfully!");
@@ -178,6 +202,7 @@
                     const snap = await getDoc(doc(db, "users", user.uid));
                     if (snap.exists()) {
                         window.appState.profile = snap.data();
+                        checkDailyReward();
                         updateLobbyUI();
                         showScreen('lobby-screen');
                         listenForMessages();
@@ -196,6 +221,24 @@
             }
         });
 
+        // --- Daily Reward ---
+        async function checkDailyReward() {
+            const now = Date.now();
+            const lastReward = window.appState.profile.lastDailyReward || 0;
+            const dayInMs = 24 * 60 * 60 * 1000;
+            
+            if (now - lastReward > dayInMs) {
+                const reward = 500;
+                await updateDoc(doc(db, "users", auth.currentUser.uid), {
+                    money: window.appState.profile.money + reward,
+                    lastDailyReward: now
+                });
+                window.appState.profile.money += reward;
+                alert(`🎁 Daily Reward! +${reward} coins`);
+                updateLobbyUI();
+            }
+        }
+
         function updateLobbyUI() {
             const p = window.appState.profile;
             if (!p) return;
@@ -203,6 +246,145 @@
             document.getElementById('p-level').innerText = p.level;
             document.getElementById('p-money').innerText = p.money;
             document.getElementById('p-domain').innerText = p.domain.name;
+            document.getElementById('p-wins').innerText = p.wins || 0;
+        }
+
+        // --- SHOP SYSTEM ---
+        const SHOP_INVENTORY_SIZE = 12;
+        let shopMonsters = [];
+
+        function generateShopInventory() {
+            shopMonsters = [];
+            for (let i = 0; i < SHOP_INVENTORY_SIZE; i++) {
+                const monsterId = Math.floor(Math.random() * 2000) + 1;
+                shopMonsters.push(generateMonster(monsterId));
+            }
+        }
+
+        function openShop() {
+            generateShopInventory();
+            renderShop();
+            showScreen('shop-screen');
+        }
+
+        function renderShop() {
+            const shopGrid = document.getElementById('shop-grid');
+            shopGrid.innerHTML = "";
+            
+            shopMonsters.forEach((monster, idx) => {
+                const div = document.createElement('div');
+                const rarityColor = RARITY_TIERS[monster.rarityIdx].color;
+                const canAfford = window.appState.profile.money >= monster.price;
+                
+                div.className = `bg-gray-800 border-2 border-${rarityColor}-500 rounded p-3 cursor-pointer hover:scale-105 transition`;
+                div.innerHTML = `
+                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2">
+                    <div class="font-bold text-sm truncate">${monster.name}</div>
+                    <div class="text-xs text-${rarityColor}-300 font-bold">${monster.rarity}</div>
+                    <div class="text-xs mt-1">ATK: ${monster.atk}</div>
+                    <div class="text-xs">HP: ${monster.hp}</div>
+                    <button class="w-full mt-2 ${canAfford ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 cursor-not-allowed'} px-2 py-1 rounded text-xs font-bold">
+                        ${canAfford ? `BUY $${monster.price}` : 'NO $'}
+                    </button>
+                `;
+                
+                if (canAfford) {
+                    div.onclick = () => buyMonster(monster, idx);
+                }
+                shopGrid.appendChild(div);
+            });
+        }
+
+        async function buyMonster(monster, idx) {
+            const p = window.appState.profile;
+            if (p.money < monster.price) {
+                alert("Not enough money!");
+                return;
+            }
+            
+            const newMoney = p.money - monster.price;
+            const newInventory = [...p.inventory, monster.id];
+            
+            await updateDoc(doc(db, "users", auth.currentUser.uid), {
+                money: newMoney,
+                inventory: newInventory
+            });
+            
+            window.appState.profile.money = newMoney;
+            window.appState.profile.inventory = newInventory;
+            alert(`✅ Bought ${monster.name}!`);
+            updateLobbyUI();
+            renderShop();
+        }
+
+        // --- INVENTORY SYSTEM ---
+        function openInventory() {
+            renderInventory();
+            showScreen('inventory-screen');
+        }
+
+        function renderInventory() {
+            const invGrid = document.getElementById('inventory-grid');
+            invGrid.innerHTML = "";
+            
+            if (!window.appState.profile.inventory || window.appState.profile.inventory.length === 0) {
+                invGrid.innerHTML = "<p class='text-gray-400 col-span-full text-center py-8'>No monsters collected yet!</p>";
+                return;
+            }
+            
+            // Count duplicates
+            const monsterCounts = {};
+            window.appState.profile.inventory.forEach(id => {
+                if (!monsterCounts[id]) monsterCounts[id] = 0;
+                monsterCounts[id]++;
+            });
+            
+            Object.entries(monsterCounts).forEach(([monsterId, count]) => {
+                const monster = generateMonster(parseInt(monsterId));
+                const div = document.createElement('div');
+                const rarityColor = RARITY_TIERS[monster.rarityIdx].color;
+                
+                div.className = `bg-gray-800 border-2 border-${rarityColor}-500 rounded p-3`;
+                div.innerHTML = `
+                    <img src="${monster.image}" class="w-full h-24 object-cover rounded mb-2">
+                    <div class="font-bold text-sm truncate">${monster.name}</div>
+                    <div class="text-xs text-${rarityColor}-300 font-bold">${monster.rarity}</div>
+                    <div class="text-xs mt-1">ATK: ${monster.atk}</div>
+                    <div class="text-xs">HP: ${monster.hp}</div>
+                    <div class="bg-blue-600 mt-2 px-2 py-1 rounded text-xs font-bold text-center">x${count}</div>
+                `;
+                invGrid.appendChild(div);
+            });
+        }
+
+        // --- LEADERBOARD ---
+        function openLeaderboard() {
+            loadLeaderboard();
+            showScreen('leaderboard-screen');
+        }
+
+        async function loadLeaderboard() {
+            const q = query(collection(db, "users"), orderBy("wins", "desc"), limit(10));
+            onSnapshot(q, (snap) => {
+                const leaderList = document.getElementById('leaderboard-list');
+                leaderList.innerHTML = "";
+                
+                let rank = 1;
+                snap.forEach(doc => {
+                    const user = doc.data();
+                    const li = document.createElement('li');
+                    li.className = "flex justify-between items-center bg-gray-700 p-3 rounded mb-2 hover:bg-gray-600";
+                    li.innerHTML = `
+                        <span class="font-bold text-lg">#${rank} ${user.username}</span>
+                        <div>
+                            <span class="bg-blue-600 px-3 py-1 rounded mr-2">Lvl ${user.level}</span>
+                            <span class="bg-yellow-600 px-3 py-1 rounded">${user.wins || 0} Wins</span>
+                        </div>
+                    `;
+                    leaderList.appendChild(li);
+                    rank++;
+                });
+            });
         }
 
         // --- Search & Chat ---
@@ -211,9 +393,6 @@
         const searchResults = document.getElementById('search-results');
 
         btnSearch.onclick = async () => {
-            const q = query(collection(db, "users"), where("username", "==", searchInput.value));
-            const querySnapshot = await getDoc(doc(db, "users", searchInput.value)); // Note: this was a placeholder
-            // Better search:
             const qActual = query(collection(db, "users"), where("username", ">=", searchInput.value), where("username", "<=", searchInput.value + '\uf8ff'));
             onSnapshot(qActual, (snap) => {
                 searchResults.innerHTML = "";
@@ -251,7 +430,7 @@
             const battleData = {
                 players: [auth.currentUser.uid, otherUid],
                 status: "active",
-                turn: otherUid, // Challenger goes second
+                turn: otherUid,
                 p1: { uid: auth.currentUser.uid, hp: 8000, field: [], hand: getRandomHand(), domainUsed: false },
                 p2: { uid: otherUid, hp: 8000, field: [], hand: getRandomHand(), domainUsed: false },
                 log: ["Battle started!"]
@@ -336,10 +515,9 @@
             const isP1 = b.players[0] === auth.currentUser.uid;
             const meKey = isP1 ? "p1" : "p2";
             
-            // Check for Fusion (if 2 monsters already on field)
             if (b[meKey].field.length >= 2 && monster.type === 'spell') {
                 if (confirm("Fusion Summon using 2 monsters on field?")) {
-                    const fusionMonster = generateMonster(999); // Boss monster
+                    const fusionMonster = generateMonster(999);
                     fusionMonster.name = "ULTIMATE FUSION";
                     fusionMonster.atk = 5000;
                     const newField = [fusionMonster];
@@ -362,19 +540,11 @@
             updates[`${meKey}.field`] = newField;
             updates[`${meKey}.hand`] = newHand;
             updates.log = arrayUnion(`${window.appState.profile.username} summoned ${monster.name}!`);
-            
-            // Spell Technique: if lost 2 monsters (simplified check)
-            if (monster.type === 'spell' && b[meKey].hp < 4000) {
-                updates.log = arrayUnion(`✨ Spell Technique Activated: 3 Straight Turns!`);
-                // Implementation: keep turn same for 2 more times (requires complex turn logic, simplified here)
-            }
 
             await updateDoc(doc(db, "battles", [b.players[0], b.players[1]].sort().join('_')), updates);
         }
 
         async function attackWithMonster(monster) {
-            // Simplified attack: deals monster ATK to opponent HP directly if field is empty, 
-            // or destroys first opponent monster
             const b = window.appState.currentBattle;
             if (b.turn !== auth.currentUser.uid) return alert("Not your turn!");
             const isP1 = b.players[0] === auth.currentUser.uid;
@@ -411,7 +581,6 @@
             
             if (b[meKey].domainUsed) return alert("Domain already used this battle!");
             
-            // 24hr check
             const now = Date.now();
             if (now - window.appState.profile.lastDomainUse < 24 * 60 * 60 * 1000) {
                 return alert("Domain on cooldown! Wait 24hrs.");
@@ -421,7 +590,6 @@
             const updates = {};
             updates[`${meKey}.domainUsed`] = true;
             updates.log = arrayUnion(`🌟 DOMAIN EXPANSION: ${domain.name}!`);
-            // Apply domain effect logic here (e.g., buff all monsters)
             const buffedField = b[meKey].field.map(m => ({...m, atk: m.atk * 2}));
             updates[`${meKey}.field`] = buffedField;
             
@@ -464,6 +632,9 @@
 
         window.acceptBattle = acceptBattle;
         document.getElementById('btn-back-lobby').onclick = () => showScreen('lobby-screen');
+        document.getElementById('btn-back-shop').onclick = () => showScreen('lobby-screen');
+        document.getElementById('btn-back-inventory').onclick = () => showScreen('lobby-screen');
+        document.getElementById('btn-back-leaderboard').onclick = () => showScreen('lobby-screen');
         document.getElementById('btn-surrender').onclick = () => {
             if (confirm("Surrender battle?")) showScreen('lobby-screen');
         };
@@ -479,6 +650,10 @@
             });
             document.getElementById('chat-input').value = "";
         };
+
+        window.openShop = openShop;
+        window.openInventory = openInventory;
+        window.openLeaderboard = openLeaderboard;
 
     </script>
     <style>
@@ -503,26 +678,77 @@
 
     <!-- Lobby Screen -->
     <div id="lobby-screen" class="hidden p-4">
-        <div class="max-w-4xl mx-auto">
+        <div class="max-w-6xl mx-auto">
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-2xl font-bold">Welcome, <span id="player-name">Player</span></h2>
                 <button id="btn-logout" class="bg-red-600 px-4 py-2 rounded">Logout</button>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                 <div class="bg-gray-800 p-4 rounded-lg">
                     <h3 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Profile</h3>
                     <p>Level: <span id="p-level">1</span></p>
                     <p>Money: $<span id="p-money">0</span></p>
+                    <p class="mt-2">Wins: <span id="p-wins">0</span></p>
                     <p class="mt-2 text-blue-300">Domain: <span id="p-domain">None</span></p>
                 </div>
-                <div class="md:col-span-2 bg-gray-800 p-4 rounded-lg">
-                    <h3 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Search Players</h3>
-                    <div class="flex gap-2 mb-4">
-                        <input id="search-input" type="text" placeholder="Username..." class="flex-1 p-2 rounded bg-gray-700">
-                        <button id="btn-search" class="bg-blue-600 px-4 py-2 rounded">Search</button>
-                    </div>
-                    <div id="search-results" class="space-y-2"></div>
+                <div class="bg-gradient-to-br from-green-900 to-green-700 p-4 rounded-lg cursor-pointer hover:scale-105 transition" onclick="openShop()">
+                    <h3 class="text-xl font-bold">🛍️ SHOP</h3>
+                    <p class="text-sm mt-2">Buy Monsters & Spells</p>
                 </div>
+                <div class="bg-gradient-to-br from-purple-900 to-purple-700 p-4 rounded-lg cursor-pointer hover:scale-105 transition" onclick="openInventory()">
+                    <h3 class="text-xl font-bold">📦 INVENTORY</h3>
+                    <p class="text-sm mt-2">View Your Collection</p>
+                </div>
+                <div class="bg-gradient-to-br from-yellow-900 to-yellow-700 p-4 rounded-lg cursor-pointer hover:scale-105 transition" onclick="openLeaderboard()">
+                    <h3 class="text-xl font-bold">🏆 LEADERBOARD</h3>
+                    <p class="text-sm mt-2">Top Players</p>
+                </div>
+            </div>
+            <div class="md:col-span-4 bg-gray-800 p-4 rounded-lg">
+                <h3 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Search Players</h3>
+                <div class="flex gap-2 mb-4">
+                    <input id="search-input" type="text" placeholder="Username..." class="flex-1 p-2 rounded bg-gray-700">
+                    <button id="btn-search" class="bg-blue-600 px-4 py-2 rounded">Search</button>
+                </div>
+                <div id="search-results" class="space-y-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shop Screen -->
+    <div id="shop-screen" class="hidden p-4">
+        <div class="max-w-6xl mx-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold">🛍️ MONSTER SHOP</h2>
+                <div class="flex gap-4">
+                    <div class="bg-yellow-600 px-6 py-2 rounded font-bold">💰 $<span id="shop-money">0</span></div>
+                    <button id="btn-back-shop" class="bg-red-600 px-4 py-2 rounded">Back</button>
+                </div>
+            </div>
+            <div id="shop-grid" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+        </div>
+    </div>
+
+    <!-- Inventory Screen -->
+    <div id="inventory-screen" class="hidden p-4">
+        <div class="max-w-6xl mx-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold">📦 YOUR INVENTORY</h2>
+                <button id="btn-back-inventory" class="bg-red-600 px-4 py-2 rounded">Back</button>
+            </div>
+            <div id="inventory-grid" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+        </div>
+    </div>
+
+    <!-- Leaderboard Screen -->
+    <div id="leaderboard-screen" class="hidden p-4">
+        <div class="max-w-2xl mx-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold">🏆 LEADERBOARD</h2>
+                <button id="btn-back-leaderboard" class="bg-red-600 px-4 py-2 rounded">Back</button>
+            </div>
+            <div class="bg-gray-800 p-6 rounded-lg">
+                <ul id="leaderboard-list"></ul>
             </div>
         </div>
     </div>
